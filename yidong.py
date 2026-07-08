@@ -4,19 +4,27 @@
 # 基于 Surge 抓包分析，全面适配新版 API (m.mcloud.139.com)
 # 
 # 环境变量: ydyp_ck
-# 格式: jwtToken#手机号#deviceId
+# 格式: 完整的 Cookie 字符串 (从 Surge/Charles 抓包中复制)
 # 多账号使用 @ 分隔
 #
 # 获取方式:
-# 1. 使用 Surge/Charles 等工具抓包移动云盘 App
-# 2. 找到请求头中的 jwtToken、deviceId
-# 3. 组合成: jwtToken#手机号#deviceId
+# 1. 使用 Surge/Charles 抓包移动云盘 App
+# 2. 进入"签到"页面
+# 3. 找到任意请求 (如 infoV3 或 taskListV2)
+# 4. 复制请求头中的 Cookie 完整内容
+# 5. 粘贴到青龙环境变量 ydyp_ck 中
+#
+# 示例 Cookie 格式:
+# JSESSIONID=xxx;jwtToken=eyJhbG...;userDomainId=1039...;cookieToken=YZsid...;cookieTokenKey=bW9iaWxl...;smidV2=2026...;_c_WBKFRo=...
+#
+# ⚠️ 注意: Cookie 会过期(约几小时)，需要定期更新！
 # =====================================================
 
 import asyncio
 import json
 import os
 import random
+import re
 import time
 from datetime import datetime
 
@@ -43,25 +51,117 @@ ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.1
 
 ydyp_ck = get_env("ydyp_ck", "@")
 
-is_redeem = False
-redeem_reward_description = ""
+# 调试模式 - 打印详细请求信息
+DEBUG = os.getenv("ydyp_debug", "false").lower() == "true"
+
+
+def parse_cookie(cookie_str):
+    """解析 Cookie 字符串为字典"""
+    cookies = {}
+    for item in cookie_str.split(';'):
+        item = item.strip()
+        if '=' in item:
+            key, value = item.split('=', 1)
+            cookies[key.strip()] = value.strip()
+    return cookies
+
+
+def extract_account_from_jwt(jwt_token):
+    """从 jwtToken 中提取信息"""
+    try:
+        import base64
+        parts = jwt_token.split('.')
+        if len(parts) >= 2:
+            payload = parts[1]
+            payload += '=' * (4 - len(payload) % 4)
+            decoded = base64.b64decode(payload)
+            data = json.loads(decoded)
+
+            # 解析 sub 字段
+            sub_str = data.get('sub', '{}')
+            sub_data = json.loads(sub_str)
+
+            # 获取 userDomainId
+            user_domain_id = sub_data.get('userDomainId', '')
+
+            # 获取 areaCode (省份)
+            area_code = sub_data.get('areaCode', '')
+
+            # 获取 provCode
+            prov_code = sub_data.get('provCode', '')
+
+            # 获取 deviceid
+            device_id = sub_data.get('deviceid', '')
+
+            # 获取加密的 account
+            account_enc = sub_data.get('account', '')
+
+            return {
+                'userDomainId': user_domain_id,
+                'areaCode': area_code,
+                'provCode': prov_code,
+                'deviceid': device_id,
+                'account_enc': account_enc,
+                'exp': data.get('exp', 0),
+                'iat': data.get('iat', 0)
+            }
+    except Exception as e:
+        if DEBUG:
+            fn_print(f"[DEBUG] JWT 解析异常: {e}")
+    return {}
+
+
+def extract_phone_from_cookie_token_key(ctk):
+    """从 cookieTokenKey 中提取手机号"""
+    try:
+        import base64
+        decoded = base64.b64decode(ctk)
+        text = decoded.decode('utf-8', errors='ignore')
+        # 格式: mobile:手机号:...
+        parts = text.split(':')
+        if len(parts) >= 2:
+            return parts[1]
+    except:
+        pass
+    return ""
 
 
 class MobileCloudDisk:
-    def __init__(self, cookie):
+    def __init__(self, cookie_str):
         self.client = httpx.AsyncClient(verify=False, timeout=60)
-        self.click_num = 15
-        self.draw = 1
         self.timestamp = str(int(round(time.time() * 1000)))
 
-        # 解析环境变量: jwtToken#手机号#deviceId
-        parts = cookie.split("#")
-        self.jwt_token = parts[0]
-        self.account = parts[1] if len(parts) > 1 else ""
-        self.device_id = parts[2] if len(parts) > 2 else ""
-        self.encrypt_account = self.account[:3] + "*" * 4 + self.account[7:] if len(self.account) >= 11 else self.account
+        # 解析完整 Cookie
+        self.cookies_dict = parse_cookie(cookie_str)
 
-        # 基础请求头 (基于 Surge 抓包数据)
+        # 提取关键信息
+        self.jwt_token = self.cookies_dict.get('jwtToken', '')
+        self.jwt_info = extract_account_from_jwt(self.jwt_token) if self.jwt_token else {}
+
+        # 获取手机号
+        self.account = extract_phone_from_cookie_token_key(
+            self.cookies_dict.get('cookieTokenKey', '')
+        )
+        if not self.account and self.jwt_info:
+            # 尝试从其他字段获取
+            pass
+
+        self.encrypt_account = self.account[:3] + "*" * 4 + self.account[7:] if len(self.account) >= 11 else (self.account or "未知")
+
+        # 获取 deviceId (从 thumbcache 或 jwt)
+        self.device_id = self.cookies_dict.get('.thumbcache_45700955f71be4ef518b0a1af26a3f40', '')
+        if not self.device_id:
+            for key in self.cookies_dict:
+                if 'thumbcache' in key:
+                    self.device_id = self.cookies_dict[key]
+                    break
+        if not self.device_id and self.jwt_info:
+            self.device_id = self.jwt_info.get('deviceid', '')
+
+        # 检查 Cookie 完整性
+        self.cookie_valid = self._validate_cookie()
+
+        # 基础请求头
         self.base_headers = {
             'User-Agent': ua,
             'Accept': '*/*',
@@ -73,7 +173,7 @@ class MobileCloudDisk:
             'Referer': 'https://m.mcloud.139.com/portal/mobilecloud/index.html?path=newsignin&sourceid=1002&enableShare=1',
         }
 
-        # 带认证的请求头 (从抓包中提取的关键字段)
+        # 带认证的请求头
         self.auth_headers = {
             **self.base_headers,
             'jwtToken': self.jwt_token,
@@ -83,33 +183,55 @@ class MobileCloudDisk:
             'showLoading': 'true',
         }
 
-        # Cookie (从抓包中提取)
-        self.cookies = {
-            'jwtToken': self.jwt_token,
-        }
-
         # 汇总信息
         self.summary = {
             "account": self.encrypt_account,
             "signed": False,
-            "tasks_completed": [],
             "clouds": 0,
             "messages": []
         }
 
+    def _validate_cookie(self):
+        """验证 Cookie 是否完整"""
+        required = ['jwtToken']
+        missing = [k for k in required if k not in self.cookies_dict or not self.cookies_dict[k]]
+        if missing:
+            return False, f"缺少必要字段: {', '.join(missing)}"
+
+        # 检查 jwtToken 是否过期
+        if self.jwt_info:
+            exp = self.jwt_info.get('exp', 0)
+            now = int(time.time())
+            if exp and exp < now:
+                return False, f"jwtToken 已过期 (过期时间: {datetime.fromtimestamp(exp)})"
+
+        return True, "Cookie 格式正确"
+
     def log(self, msg):
-        """记录日志"""
         fn_print(msg)
         self.summary["messages"].append(msg)
 
+    def debug_print(self, msg):
+        if DEBUG:
+            fn_print(f"[DEBUG] {msg}")
+
     async def query_sign_in_status(self):
-        """查询签到状态 - 新版 API: /ycloud/signin/page/infoV3"""
+        """查询签到状态"""
         try:
+            url = "https://m.mcloud.139.com/ycloud/signin/page/infoV3?client=app"
+            self.debug_print(f"请求: {url}")
+            self.debug_print(f"Headers: {json.dumps(self.auth_headers, ensure_ascii=False)[:200]}...")
+            self.debug_print(f"Cookies keys: {list(self.cookies_dict.keys())}")
+
             response = await self.client.get(
-                url="https://m.mcloud.139.com/ycloud/signin/page/infoV3?client=app",
+                url=url,
                 headers=self.auth_headers,
-                cookies=self.cookies
+                cookies=self.cookies_dict
             )
+
+            self.debug_print(f"响应状态: {response.status_code}")
+            self.debug_print(f"响应内容: {response.text[:500]}")
+
             if response.status_code == 200:
                 data = response.json()
                 if data.get("code") == 0:
@@ -133,22 +255,26 @@ class MobileCloudDisk:
                         self.summary["signed"] = True
                         self.log(f"✅ 今日已签到 | 连续{sign_count}天 | 云朵{total}个 | 今日+{today_clouds}")
                     else:
-                        self.log(f"📝 今日未签到，开始签到...")
+                        self.log(f"📝 今日未签到，尝试签到...")
                         await self.sign_in()
                 else:
-                    self.log(f"❌ 查询签到状态失败：{data.get('msg')}")
+                    msg = data.get('msg', '未知错误')
+                    self.log(f"❌ 查询签到状态失败：{msg}")
+                    if "登录" in str(msg) or "未登录" in str(msg):
+                        self.log(f"⚠️ Cookie 可能已过期，请重新抓包获取！")
+                        self.log(f"⚠️ jwtToken 过期时间: {datetime.fromtimestamp(self.jwt_info.get('exp', 0)) if self.jwt_info.get('exp') else '未知'}")
             else:
                 self.log(f"❌ 查询签到状态异常：HTTP {response.status_code}")
         except Exception as e:
             self.log(f"❌ 查询签到状态异常：{e}")
 
     async def sign_in(self):
-        """签到 - 通过 doTaskPost 接口"""
+        """签到"""
         try:
             response = await self.client.post(
                 url="https://m.mcloud.139.com/ycloud/signin/page/doTaskPost",
                 headers=self.auth_headers,
-                cookies=self.cookies,
+                cookies=self.cookies_dict,
                 json={"client": "app", "deviceId": self.device_id}
             )
             if response.status_code == 200:
@@ -164,12 +290,12 @@ class MobileCloudDisk:
             self.log(f"❌ 签到异常：{e}")
 
     async def get_task_list(self, group="day"):
-        """获取任务列表 - 新版 API: /ycloud/signin/task/taskListV2"""
+        """获取任务列表"""
         try:
             response = await self.client.post(
                 url="https://m.mcloud.139.com/ycloud/signin/task/taskListV2",
                 headers=self.auth_headers,
-                cookies=self.cookies,
+                cookies=self.cookies_dict,
                 json={
                     "marketname": "sign_in_3",
                     "clientVersion": "13.0.1",
@@ -180,7 +306,6 @@ class MobileCloudDisk:
                 data = response.json()
                 if data.get("code") == 0:
                     result = data.get("result", {})
-                    group_state = data.get("groupState", {})
 
                     group_names = {
                         "day": "📅 每日任务",
@@ -188,9 +313,6 @@ class MobileCloudDisk:
                         "time": "⏰ 限时任务",
                         "cloudEmail": "📧 邮箱任务",
                         "hidden": "🔒 隐藏任务",
-                        "new": "🆕 新手任务",
-                        "beiyong1": "📋 备用任务1",
-                        "beiyong2": "📋 备用任务2"
                     }
 
                     group_name = group_names.get(group, group)
@@ -203,29 +325,17 @@ class MobileCloudDisk:
                         for task in tasks:
                             task_name = task.get("name", "未知任务")
                             task_status = task.get("state", "")
-                            task_id = task.get("id", "")
-
-                            # 清理 HTML 标签
-                            task_name = task_name.replace("<span id='share_title'>0/7</span>", "")
-                            task_name = task_name.replace("<span id=\'share_title\'>0/7</span>", "")
-                            task_name = task_name.replace("<span style=\'color: red; font-weight: bold;\'>", "")
-                            task_name = task_name.replace("</span>", "")
-                            task_name = task_name.replace("<br>", " ")
+                            task_name = re.sub(r'<[^>]+>', '', task_name)
 
                             if task_status == "FINISH":
                                 self.log(f"  ✅ {task_name}")
                             elif task_status == "WAIT":
-                                self.log(f"  📝 {task_name} (待完成)")
-                                # 尝试自动完成简单点击任务
-                                step_types = task.get("stepTypeSet", [])
-                                if "click" in step_types and len(step_types) == 1:
-                                    await self.complete_task(task_id, task_name)
+                                self.log(f"  📝 {task_name}")
                             else:
                                 self.log(f"  ⏳ {task_name} ({task_status})")
 
                     if not has_tasks:
                         self.log(f"  暂无任务")
-
                 else:
                     self.log(f"❌ 获取任务列表失败：{data.get('msg')}")
             else:
@@ -233,67 +343,53 @@ class MobileCloudDisk:
         except Exception as e:
             self.log(f"❌ 获取任务列表异常：{e}")
 
-    async def complete_task(self, task_id, task_name):
-        """完成任务 - 新版 API"""
-        try:
-            # 基于抓包，任务完成可能需要访问特定链接或上报
-            # 这里简化处理，实际可能需要根据任务类型调用不同接口
-            self.log(f"    尝试自动完成任务 {task_id}...")
-            # 实际实现需要根据具体任务类型调整
-            await asyncio.sleep(0.5)
-        except Exception as e:
-            pass
-
     async def get_quick_prize(self):
-        """获取快捷奖励信息 - /ycloud/signin/page/getQuickPrizeVo"""
+        """获取快捷奖励信息"""
         try:
             response = await self.client.get(
                 url="https://m.mcloud.139.com/ycloud/signin/page/getQuickPrizeVo",
                 headers=self.auth_headers,
-                cookies=self.cookies
+                cookies=self.cookies_dict
             )
             if response.status_code == 200:
                 data = response.json()
                 if data.get("code") == 0:
                     result = data.get("result", {})
                     is_friday = result.get("isFriday", 0)
-                    start_hour = result.get("startHour", 10)
-                    start_min = result.get("startMinute", 30)
-                    end_hour = result.get("endHour", 12)
-                    end_min = result.get("endMinute", 30)
-                    is_cur_month_received = result.get("isCurMonthReceived", 0)
-
-                    self.log(f"🎁 快捷奖励: {'周五' if is_friday else '非周五'} | 时间 {start_hour}:{start_min:02d}-{end_hour}:{end_min:02d} | 本月已领: {'是' if is_cur_month_received else '否'}")
+                    start_h = result.get("startHour", 10)
+                    start_m = result.get("startMinute", 30)
+                    end_h = result.get("endHour", 12)
+                    end_m = result.get("endMinute", 30)
+                    self.log(f"🎁 快捷奖励: {'周五' if is_friday else '非周五'} | {start_h}:{start_m:02d}-{end_h}:{end_m:02d}")
         except Exception as e:
             pass
 
     async def task_expansion(self):
-        """任务扩展/云朵膨胀 - /ycloud/signin/page/taskExpansion"""
+        """任务扩展/云朵膨胀"""
         try:
             response = await self.client.get(
                 url="https://m.mcloud.139.com/ycloud/signin/page/taskExpansion",
                 headers=self.auth_headers,
-                cookies=self.cookies
+                cookies=self.cookies_dict
             )
             if response.status_code == 200:
                 data = response.json()
                 if data.get("code") == 0:
                     result = data.get("result", {})
-                    cur_backup = result.get("curMonthBackup", False)
-                    pre_backup = result.get("preMonthBackup", False)
-                    next_month = result.get("nextMonthTaskRecordCount", 0)
-
-                    self.log(f"📈 备份状态: 本月{'✅' if cur_backup else '❌'} | 上月{'✅' if pre_backup else '❌'} | 下月膨胀:{next_month}朵")
+                    cur = result.get("curMonthBackup", False)
+                    pre = result.get("preMonthBackup", False)
+                    next_m = result.get("nextMonthTaskRecordCount", 0)
+                    self.log(f"📈 备份: 本月{'✅' if cur else '❌'} | 上月{'✅' if pre else '❌'} | 下月+{next_m}朵")
         except Exception as e:
             pass
 
     async def receive_clouds(self):
-        """领取云朵 - /ycloud/signin/page/receive"""
+        """领取云朵"""
         try:
             response = await self.client.get(
                 url="https://m.mcloud.139.com/ycloud/signin/page/receive",
                 headers=self.auth_headers,
-                cookies=self.cookies
+                cookies=self.cookies_dict
             )
             if response.status_code == 200:
                 data = response.json()
@@ -302,50 +398,51 @@ class MobileCloudDisk:
                     receive = result.get("receive", 0)
                     total = result.get("total", 0)
                     self.summary["clouds"] = total
-                    self.log(f"☁️ 云朵: 待领取{receive}朵 | 总计{total}朵")
+                    self.log(f"☁️ 云朵: 待领{receive}朵 | 总计{total}朵")
                 else:
-                    self.log(f"☁️ 云朵状态: {data.get('msg')}")
+                    self.log(f"☁️ 云朵: {data.get('msg')}")
         except Exception as e:
             pass
 
     async def get_pop_info(self):
-        """获取弹窗信息 - /ycloud/signin/public/getPopInfo"""
+        """获取弹窗信息"""
         try:
             response = await self.client.post(
                 url="https://m.mcloud.139.com/ycloud/signin/public/getPopInfo",
                 headers=self.auth_headers,
-                cookies=self.cookies,
+                cookies=self.cookies_dict,
                 json={"clientType": "iphone", "version": "13.0.1"}
             )
             if response.status_code == 200:
                 data = response.json()
                 result = data.get("result", {})
                 if result.get("showPop"):
-                    self.log(f"🎉 有弹窗奖励可领取！")
+                    self.log(f"🎉 有弹窗奖励！")
         except Exception as e:
             pass
 
     async def popup_check(self):
-        """检查弹窗 - /ycloud/signin/page/popup"""
+        """检查弹窗"""
         try:
             response = await self.client.get(
                 url="https://m.mcloud.139.com/ycloud/signin/page/popup",
                 headers=self.auth_headers,
-                cookies=self.cookies
+                cookies=self.cookies_dict
             )
             if response.status_code == 200:
                 data = response.json()
-                # 处理弹窗逻辑
+                if data.get("result"):
+                    self.log(f"🎈 有弹窗")
         except:
             pass
 
     async def journaling(self, module, optkeyword, sourceid="1002"):
-        """上报访问日志 - /ycloud/visitlog/journaling"""
+        """上报访问日志"""
         try:
             await self.client.post(
                 url="https://m.mcloud.139.com/ycloud/visitlog/journaling",
                 headers=self.auth_headers,
-                cookies=self.cookies,
+                cookies=self.cookies_dict,
                 data={
                     "module": module,
                     "optkeyword": optkeyword,
@@ -359,10 +456,23 @@ class MobileCloudDisk:
     async def run(self):
         """主执行流程"""
         self.log(f"\n{'='*60}")
-        self.log(f"📱 开始执行用户【{self.encrypt_account}】")
+        self.log(f"📱 用户【{self.encrypt_account}】")
+
+        # Cookie 验证
+        valid, msg = self.cookie_valid if isinstance(self.cookie_valid, tuple) else (True, "")
+        if not valid:
+            self.log(f"❌ {msg}")
+            self.log(f"⚠️ 请检查环境变量 ydyp_ck 是否正确设置")
+            self.log(f"{'='*60}\n")
+            return self.summary
+
+        self.log(f"✅ Cookie 验证通过")
+        if self.jwt_info.get('exp'):
+            exp_time = datetime.fromtimestamp(self.jwt_info['exp'])
+            self.log(f"⏰ Token 过期时间: {exp_time.strftime('%Y-%m-%d %H:%M:%S')}")
+
         self.log(f"{'='*60}")
 
-        # 上报访问日志
         await self.journaling("uservisit", "newsignin_index_client")
 
         self.log(f"\n📋 签到状态")
@@ -393,11 +503,10 @@ class MobileCloudDisk:
         self.log(f"\n☁️ 云朵领取")
         await self.receive_clouds()
 
-        # 上报完成日志
         await self.journaling("uservisit", "newsignin_index_receive_type")
 
         self.log(f"\n{'='*60}")
-        self.log(f"✅ 用户【{self.encrypt_account}】执行完成")
+        self.log(f"✅ 用户【{self.encrypt_account}】完成 | 签到{'✅' if self.summary['signed'] else '❌'} | 云朵{self.summary['clouds']}朵")
         self.log(f"{'='*60}\n")
 
         return self.summary
@@ -406,29 +515,36 @@ class MobileCloudDisk:
 async def main():
     if not ydyp_ck or ydyp_ck == ['']:
         fn_print("❌ 未配置环境变量 ydyp_ck")
-        fn_print("📖 格式: jwtToken#手机号#deviceId")
-        fn_print("📖 多账号使用 @ 分隔")
-        fn_print("\n📖 获取方式:")
-        fn_print("   1. 使用 Surge/Charles 等工具抓包移动云盘 App")
-        fn_print("   2. 在请求头中找到 jwtToken 和 deviceId")
-        fn_print("   3. 组合成: jwtToken#手机号#deviceId")
+        fn_print("")
+        fn_print("📖 格式: 完整的 Cookie 字符串")
+        fn_print("📖 获取方式: Surge/Charles 抓包移动云盘 App 的签到页面")
+        fn_print("📖 多账号用 @ 分隔")
+        fn_print("")
+        fn_print("🔍 调试模式: 设置环境变量 ydyp_debug=true 可查看详细请求信息")
         return
 
     all_summaries = []
-    for ck in ydyp_ck:
+    for i, ck in enumerate(ydyp_ck):
         if ck.strip():
-            mobileCloudDisk = MobileCloudDisk(ck.strip())
-            summary = await mobileCloudDisk.run()
-            all_summaries.append(summary)
+            try:
+                fn_print(f"\n🚀 开始执行第 {i+1} 个账号...")
+                disk = MobileCloudDisk(ck.strip())
+                summary = await disk.run()
+                all_summaries.append(summary)
+            except Exception as e:
+                fn_print(f"❌ 第 {i+1} 个账号执行异常：{e}")
+                import traceback
+                if DEBUG:
+                    traceback.print_exc()
 
-    # 输出汇总
+    # 汇总
     fn_print(f"\n{'='*60}")
-    fn_print(f"📊 执行汇总")
+    fn_print(f"📊 执行汇总 (共{len(all_summaries)}个账号)")
     fn_print(f"{'='*60}")
     for s in all_summaries:
         fn_print(f"  👤 {s['account']}: 签到{'✅' if s['signed'] else '❌'} | 云朵{s['clouds']}朵")
 
-    # 发送通知
+    # 通知
     try:
         msg = f"中国移动云盘签到 - {datetime.now().strftime('%Y/%m/%d')}\n"
         for s in all_summaries:
