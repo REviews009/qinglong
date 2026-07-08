@@ -75,7 +75,7 @@ class MobileCloudDisk:
         self.JwtHeaders = {
             'User-Agent': ua,
             'Accept': '*/*',
-            'Host': 'caiyun.feixin.10086.cn:7071'
+            'Host': 'caiyun.10086.cn'
         }
         self.treetHeaders = {
             'Host': 'happy.mail.10086.cn',
@@ -110,7 +110,7 @@ class MobileCloudDisk:
     async def jwt(self):
         token = await self.refresh_token()
         if token is not None:
-            jwt_url = f"https://caiyun.feixin.10086.cn:7071/portal/auth/tyrzLogin.action?ssoToken={token}"
+            jwt_url = f"https://caiyun.10086.cn/portal/auth/tyrzLogin.action?ssoToken={token}"
             jwt_response = await self.client.post(
                 url=jwt_url,
                 headers=self.JwtHeaders
@@ -132,14 +132,14 @@ class MobileCloudDisk:
         :return: 
         """
         sign_response_datas = await self.client.get(
-            url="https://caiyun.feixin.10086.cn/market/signin/page/info?client=app",
+            url="https://caiyun.10086.cn/market/signin/page/info?client=app",
             headers=self.JwtHeaders,
             cookies=self.cookies
         )
         if sign_response_datas.status_code == 200:
             sign_response_data = sign_response_datas.json()
-            if sign_response_data["msg"] == "success":
-                today_sign = sign_response_data["result"].get("todaySignIn", False)
+            if sign_response_data.get("msg") == "success":
+                today_sign = sign_response_data.get("result", {}).get("todaySignIn", False)
                 if today_sign:
                     fn_print(f"用户【{self.account}】，===今日已签到☑️===")
                 else:
@@ -152,7 +152,7 @@ class MobileCloudDisk:
         戳一戳
         :return: 
         """
-        url = "https://caiyun.feixin.10086.cn/market/signin/task/click?key=task&id=319"
+        url = "https://caiyun.10086.cn/market/signin/task/click?key=task&id=319"
         successful_click = 0  # 获得次数
         try:
             for _ in range(self.click_num):
@@ -179,7 +179,7 @@ class MobileCloudDisk:
         刷新noteToken
         :return: 
         """
-        note_url = 'http://mnote.caiyun.feixin.10086.cn/noteServer/api/authTokenRefresh.do'
+        note_url = 'http://mnote.caiyun.10086.cn/noteServer/api/authTokenRefresh.do'
         note_payload = {
             "authToken": self.auth_token,
             "userPhone": self.account
@@ -192,7 +192,7 @@ class MobileCloudDisk:
             'APP_CP': 'android',
             'CP_VERSION': '3.2.0',
             'x-huawei-channelsrc': '10001400',
-            'Host': 'mnote.caiyun.feixin.10086.cn',
+            'Host': 'mnote.caiyun.10086.cn',
             'Content-Type': 'application/json; charset=UTF-8',
             'Accept-Encoding': 'gzip'
         }
@@ -203,19 +203,21 @@ class MobileCloudDisk:
                 headers=note_headers
             )
             if response.status_code == 200:
-                response.raise_for_status()
+                self.note_token = response.headers.get('NOTE_TOKEN')
+                self.note_auth = response.headers.get('APP_AUTH')
+                if not self.note_token or not self.note_auth:
+                    fn_print(f"用户【{self.account}】，===刷新noteToken失败，响应头中缺少必要字段===")
+            else:
+                fn_print(f"用户【{self.account}】，===刷新noteToken请求失败：{response.status_code}===")
         except Exception as e:
-            fn_print('出错了:', e)
-            return
-        self.note_token = response.headers.get('NOTE_TOKEN')
-        self.note_auth = response.headers.get('APP_AUTH')
+            fn_print(f"用户【{self.account}】，===刷新noteToken异常：{e}===")
 
     async def get_task_list(self, url, app_type):
         """
         获取任务列表
         :return: 
         """
-        task_url = f'https://caiyun.feixin.10086.cn/market/signin/task/taskList?marketname={url}'
+        task_url = f'https://caiyun.10086.cn/market/signin/task/taskList?marketname={url}'
         task_response = await self.client.get(
             url=task_url,
             headers=self.JwtHeaders,
@@ -225,8 +227,11 @@ class MobileCloudDisk:
             task_list = {}
             task_response_data = task_response.json()
             await self.rm_sleep()
-            if task_response_data["msg"] == "success":
+            if task_response_data.get("msg") == "success":
                 task_list = task_response_data.get("result", {})
+            else:
+                fn_print(f"用户【{self.account}】，===获取任务列表失败：{task_response_data.get('msg', '未知错误')}===")
+                return
             try:
                 for task_type, tasks in task_list.items():
                     if task_type in ["new", "hidden", "hiddenabc"]:
@@ -287,12 +292,15 @@ class MobileCloudDisk:
         :return: 
         """
         await self.rm_sleep()
-        task_url = f'https://caiyun.feixin.10086.cn/market/signin/task/click?key=task&id={task_id}'
-        await self.client.get(
+        task_url = f'https://caiyun.10086.cn/market/signin/task/click?key=task&id={task_id}'
+        task_response = await self.client.get(
             url=task_url,
             headers=self.JwtHeaders,
             cookies=self.cookies
         )
+        if task_response.status_code != 200:
+            fn_print(f"用户【{self.account}】，===任务执行请求异常：{task_response.status_code}===")
+            return
         if app_type == "cloud_app":
             if task_type == "day":
                 if task_id == 106:
@@ -311,7 +319,7 @@ class MobileCloudDisk:
         签到
         :return: 
         """
-        sign_in_url = 'https://caiyun.feixin.10086.cn/market/manager/commonMarketconfig/getByMarketRuleName?marketName=sign_in_3'
+        sign_in_url = 'https://caiyun.10086.cn/market/manager/commonMarketconfig/getByMarketRuleName?marketName=sign_in_3'
         sign_in_response = await self.client.get(
             url=sign_in_url,
             headers=self.JwtHeaders,
@@ -331,7 +339,7 @@ class MobileCloudDisk:
         获取笔记的默认id
         :return: 
         """
-        note_url = 'http://mnote.caiyun.feixin.10086.cn/noteServer/api/syncNotebookV3.do'
+        note_url = 'http://mnote.caiyun.10086.cn/noteServer/api/syncNotebookV3.do'
         headers = {
             'X-Tingyun-Id': 'p35OnrDoP8k;c=2;r=1122634489;u=43ee994e8c3a6057970124db00b2442c::8B3D3F05462B6E4C',
             'Charset': 'UTF-8',
@@ -343,7 +351,7 @@ class MobileCloudDisk:
             'APP_NUMBER': self.account,
             'APP_AUTH': self.note_auth,
             'NOTE_TOKEN': self.note_token,
-            'Host': 'mnote.caiyun.feixin.10086.cn',
+            'Host': 'mnote.caiyun.10086.cn',
             'Content-Type': 'application/json; charset=UTF-8',
             'Accept': '*/*'
         }
@@ -360,9 +368,13 @@ class MobileCloudDisk:
         )
         if note_response.status_code == 200:
             note_response_data = note_response.json()
-            self.notebook_id = note_response_data["notebooks"][0]["notebookId"]
-            if self.notebook_id:
-                await self.create_note(headers)
+            notebooks = note_response_data.get("notebooks", [])
+            if notebooks:
+                self.notebook_id = notebooks[0].get("notebookId")
+                if self.notebook_id:
+                    await self.create_note(headers)
+            else:
+                fn_print(f"用户【{self.account}】，===未找到笔记本，跳过笔记任务===")
         else:
             fn_print(f"获取笔记id发生异常：{note_response.status_code}")
 
@@ -372,7 +384,7 @@ class MobileCloudDisk:
         :return: 
         """
         await self.rm_sleep()
-        wx_sign_url = 'https://caiyun.feixin.10086.cn/market/playoffic/followSignInfo?isWx=true'
+        wx_sign_url = 'https://caiyun.10086.cn/market/playoffic/followSignInfo?isWx=true'
         wx_sign_response = await self.client.get(
             url=wx_sign_url,
             headers=self.JwtHeaders,
@@ -396,7 +408,7 @@ class MobileCloudDisk:
         try:
             for _ in range(self.click_num):
                 responses = await self.client.post(
-                    url="https://caiyun.feixin.10086.cn:7071/market/shake-server/shake/shakeIt?flag=1",
+                    url="https://caiyun.10086.cn/market/shake-server/shake/shakeIt?flag=1",
                     headers=self.JwtHeaders,
                     cookies=self.cookies
                 )
@@ -423,8 +435,8 @@ class MobileCloudDisk:
         :return: 
         """
         await self.rm_sleep()
-        draw_info_url = 'https://caiyun.feixin.10086.cn/market/playoffic/drawInfo'
-        draw_url = "https://caiyun.feixin.10086.cn/market/playoffic/draw"
+        draw_info_url = 'https://caiyun.10086.cn/market/playoffic/drawInfo'
+        draw_url = "https://caiyun.10086.cn/market/playoffic/draw"
 
         draw_info_response = await self.client.get(
             url=draw_info_url,
@@ -433,7 +445,7 @@ class MobileCloudDisk:
         if draw_info_response.status_code == 200:
             draw_info_data = draw_info_response.json()
             if draw_info_data.get('msg') == "success":
-                remain_num = draw_info_data["result"].get("surplusNumber", 0)
+                remain_num = draw_info_data.get("result", {}).get("surplusNumber", 0)
                 fn_print(f"剩余抽奖次数{remain_num}")
                 if remain_num > 50 - self.draw:
                     for _ in range(self.draw):
@@ -445,7 +457,7 @@ class MobileCloudDisk:
                         if draw_responses.status_code == 200:
                             draw_data = draw_responses.json()
                             if draw_data.get("code") == 0:
-                                prize_name = draw_data["result"].get("prizeName", "")
+                                prize_name = draw_data.get("result", {}).get("prizeName", "")
                                 fn_print(f"用户【{self.account}】，===抽奖成功✅✅===, 获得：{prize_name}🎉🎉")
                             else:
                                 fn_print(f"抽奖失败了❌：{draw_data}")
@@ -471,7 +483,7 @@ class MobileCloudDisk:
             headers = {
                 'Host': 'happy.mail.10086.cn', 'Upgrade-Insecure-Requests': '1', 'User-Agent': ua,
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
-                'Referer': 'https://caiyun.feixin.10086.cn:7071/',
+                'Referer': 'https://caiyun.10086.cn/',
                 'Accept-Language': 'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7'
             }
             login_info_data = requests.request("""GET""", login_info_url, headers=headers, verify=False)
@@ -537,7 +549,7 @@ class MobileCloudDisk:
                                 fn_print(f"领取每日雨滴请求发生异常：{color_response.status_code}")
                             given_water = water_data.get("result", {}).get("given", 0)
                             fn_print(f"用户【{self.account}】，===领取每日水滴💧💧：{given_water}===")
-                            fn_print(f"用户【{self.account}】，===领取每日雨滴💧💧：{color_data.get('result').get('msg')}===")
+                            fn_print(f"用户【{self.account}】，===领取每日雨滴💧💧：{color_data.get('result', {}).get('msg', '无')}===")
                         else:
                             fn_print(f"用户【{self.account}】，===签到失败❌===")
                     else:
@@ -549,11 +561,13 @@ class MobileCloudDisk:
                 url=f'{self.fruit_url}task/taskList.do?clientType=PE',
                 headers=self.treetHeaders
             )
+            task_list = []
             if task_list_responses.status_code == 200:
                 task_list_data = task_list_responses.json()
                 task_list = task_list_data.get('result', [])
             else:
                 fn_print(f"任务列表请求发生异常：{task_list_responses.status_code}")
+            task_state_result = []
             task_state_responses = await self.client.get(
                 url=f'{self.fruit_url}task/taskState.do',
                 headers=self.treetHeaders
@@ -607,11 +621,11 @@ class MobileCloudDisk:
                         fn_print(f"用户【{self.account}】，===已完成任务【{task_name}】✅✅，领取水滴: {water_num}===")
                     else:
                         fn_print(
-                            f"用户【{self.account}】，===任务【{task_name}】领取水滴失败❌, {get_water_data.get('msg')}===")
+                            f"用户【{self.account}】，===任务【{task_name}】领取水滴失败❌, {get_water_data.get('msg', '未知错误')}===")
                 else:
                     fn_print(f"领取水滴请求发生异常：{get_water_response.status_code}")
             else:
-                fn_print(f"用户【{self.account}】，===任务【{task_name}】执行失败❌, {do_task_data.get('msg')}===")
+                fn_print(f"用户【{self.account}】，===任务【{task_name}】执行失败❌, {do_task_data.get('msg', '未知错误')}===")
         else:
             fn_print(f"任务执行请求发生异常：{do_task_response.status_code}")
 
@@ -672,10 +686,11 @@ class MobileCloudDisk:
         云朵大作战
         :return: 
         """
-        game_info_url = 'https://caiyun.feixin.10086.cn/market/signin/hecheng1T/info?op=info'
-        bigin_url = 'https://caiyun.feixin.10086.cn/market/signin/hecheng1T/beinvite'
-        end_url = 'https://caiyun.feixin.10086.cn/market/signin/hecheng1T/finish?flag=true'
-        game_info_response = await self.client.get(
+        game_info_url = 'https://caiyun.10086.cn/market/signin/hecheng1T/info?op=info'
+        bigin_url = 'https://caiyun.10086.cn/market/signin/hecheng1T/beinvite'
+        end_url = 'https://caiyun.10086.cn/market/signin/hecheng1T/finish?flag=true'
+        try:
+            game_info_response = await self.client.get(
             url=game_info_url,
             headers=self.JwtHeaders,
             cookies=self.cookies
@@ -712,14 +727,16 @@ class MobileCloudDisk:
                 fn_print(f"用户【{self.account}】，===获取云朵大作战游戏信息失败❌===")
         else:
             fn_print(f"云朵大作战请求发生异常：{game_info_response.status_code}")
+        except Exception as e:
+            fn_print(f"云朵大作战执行异常：{e}")
 
     async def receive(self):
         """
         领取云朵
         :return: 
         """
-        recevice_url = "https://caiyun.feixin.10086.cn/market/signin/page/receive"
-        prize_url = f"https://caiyun.feixin.10086.cn/market/prizeApi/checkPrize/getUserPrizeLogPage?currPage=1&pageSize=15&_={self.timestamp}"
+        recevice_url = "https://caiyun.10086.cn/market/signin/page/receive"
+        prize_url = f"https://caiyun.10086.cn/market/prizeApi/checkPrize/getUserPrizeLogPage?currPage=1&pageSize=15&_={self.timestamp}"
         receive_response = await self.client.get(
             url=recevice_url,
             headers=self.JwtHeaders,
@@ -730,6 +747,10 @@ class MobileCloudDisk:
             await self.rm_sleep()
         else:
             fn_print(f"领取云朵请求发生异常：{receive_response.status_code}")
+        receive_data = {}
+        else:
+            fn_print(f"领取云朵请求发生异常：{receive_response.status_code}")
+            return
         prize_response = await self.client.get(
             url=prize_url,
             headers=self.JwtHeaders,
@@ -737,15 +758,15 @@ class MobileCloudDisk:
         )
         if prize_response.status_code == 200:
             prize_data = prize_response.json()
-            result = prize_data.get("result").get("result")
+            result = prize_data.get("result", {}).get("result", [])
             rewards = ""
             for value in result:
                 prize_name = value.get("prizeName")
                 flag = value.get("flag")
                 if flag == 1:
                     rewards += f"待领取奖品：{prize_name}\n"
-            receive_amout = receive_data["result"].get("receive", "")
-            total_amout = receive_data["result"].get("total", "")
+            receive_amout = receive_data.get("result", {}).get("receive", "")
+            total_amout = receive_data.get("result", {}).get("total", "")
             fn_print(f"\n用户【{self.account}】，===当前待领取{receive_amout}个云朵===")
             fn_print(f"用户【{self.account}】，===当前云朵数量：{total_amout}个===")
             fn_print(f"用户【{self.account}】，===云朵数量：{total_amout}个，{rewards}===")
@@ -757,7 +778,7 @@ class MobileCloudDisk:
         备份云朵
         :return: 
         """
-        backup_url = 'https://caiyun.feixin.10086.cn/market/backupgift/info'
+        backup_url = 'https://caiyun.10086.cn/market/backupgift/info'
         backup_response = await self.client.get(
             url=backup_url,
             headers=self.JwtHeaders
@@ -769,7 +790,7 @@ class MobileCloudDisk:
                 fn_print(f"用户【{self.account}】，===本月未备份，暂无连续备份奖励❌===")
             elif state == 0:
                 fn_print(f"用户【{self.account}】，===领取本月连续备份奖励===")
-                cur_url = 'https://caiyun.feixin.10086.cn/market/backupgift/receive'
+                cur_url = 'https://caiyun.10086.cn/market/backupgift/receive'
                 cur_response = await self.client.get(
                     url=cur_url,
                     headers=self.JwtHeaders
@@ -789,15 +810,17 @@ class MobileCloudDisk:
             fn_print(f"用户【{self.account}】，===领取本月连续备份奖励请求失败❌，{backup_response.status_code}===")
         await self.rm_sleep()
         # 每月膨胀云朵
-        expend_url = 'https://caiyun.feixin.10086.cn/market/signin/page/taskExpansion'
+        expend_url = 'https://caiyun.10086.cn/market/signin/page/taskExpansion'
         expend_response = await self.client.get(
             url=expend_url,
             headers=self.JwtHeaders
         )
+        expend_data = {}
         if expend_response.status_code == 200:
             expend_data = expend_response.json()
         else:
             fn_print(f"用户【{self.account}】，===每月膨胀云朵请求失败❌，{expend_response.status_code}===")
+            return
         cur_month_backup = expend_data.get("result", {}).get("curMonthBackup", "")  # 本月备份
         pre_month_backup = expend_data.get("result", {}).get("preMonthBackup", "")  # 上月备份
         cur_month_backup_task_accept = expend_data.get("result", {}).get("curMonthBackupTaskAccept", "")  # 本月是否领取
@@ -814,7 +837,7 @@ class MobileCloudDisk:
             if cur_month_backup_task_accept:
                 fn_print(f"用户【{self.account}】，===上月已备份，膨胀云朵已领取===")
             else:
-                receive_url = f'https://caiyun.feixin.10086.cn/market/signin/page/receiveTaskExpansion?acceptDate={accept_date}'
+                receive_url = f'https://caiyun.10086.cn/market/signin/page/receiveTaskExpansion?acceptDate={accept_date}'
                 receive_response = await self.client.get(
                     url=receive_url,
                     headers=self.JwtHeaders,
@@ -837,19 +860,22 @@ class MobileCloudDisk:
         通知云朵
         :return: 
         """
-        send_url = 'https://caiyun.feixin.10086.cn/market/msgPushOn/task/status'
+        send_url = 'https://caiyun.10086.cn/market/msgPushOn/task/status'
         send_response = await self.client.get(
             url=send_url,
             headers=self.JwtHeaders
         )
         if send_response.status_code == 200:
             send_data = send_response.json()
+            if send_data.get("msg") != "success":
+                fn_print(f"用户【{self.account}】，===查询通知状态失败：{send_data.get('msg', '未知错误')}===")
+                return
             push_on = send_data.get("result", {}).get("pushOn", "")  # 0未开启，1开启，2未领取，3已领取
             first_task_status = send_data.get("result", {}).get("firstTaskStatus", "")
             second_task_status = send_data.get("result", {}).get("secondTaskStatus", "")
             on_duaration = send_data.get("result", {}).get("onDuration", "")  # 开启时间
             if push_on == 1:
-                reward_url = 'https://caiyun.feixin.10086.cn/market/msgPushOn/task/obtain'
+                reward_url = 'https://caiyun.10086.cn/market/msgPushOn/task/obtain'
                 if first_task_status == 3:
                     fn_print(f"用户【{self.account}】，===领取任务1奖励成功✅✅===")
                 else:
@@ -889,7 +915,7 @@ class MobileCloudDisk:
         create_time = str(int(round(time.time() * 1000)))
         await asyncio.sleep(3)
         update_time = str(int(round(time.time() * 1000)))
-        create_note_url = 'http://mnote.caiyun.feixin.10086.cn/noteServer/api/createNote.do'
+        create_note_url = 'http://mnote.caiyun.10086.cn/noteServer/api/createNote.do'
         payload = {
             "archived": 0,
             "attachmentdir": note_id,
@@ -951,14 +977,14 @@ class MobileCloudDisk:
         上传文件
         :return: 
         """
-        url = 'http://ose.caiyun.feixin.10086.cn/richlifeApp/devapp/IUploadAndDownload'
+        url = 'http://ose.caiyun.10086.cn/richlifeApp/devapp/IUploadAndDownload'
         headers = {
             'x-huawei-uploadSrc': '1', 'x-ClientOprType': '11', 'Connection': 'keep-alive', 'x-NetType': '6',
             'x-DeviceInfo': '6|127.0.0.1|1|10.0.1|Xiaomi|M2012K10C|CB63218727431865A48E691BFFDB49A1|02-00-00-00-00-00|android 11|1080X2272|zh||||032|',
             'x-huawei-channelSrc': '10000023', 'x-MM-Source': '032', 'x-SvcType': '1', 'APP_NUMBER': self.account,
             'Authorization': self.Authorization,
             'X-Tingyun-Id': 'p35OnrDoP8k;c=2;r=1955442920;u=43ee994e8c3a6057970124db00b2442c::8B3D3F05462B6E4C',
-            'Host': 'ose.caiyun.feixin.10086.cn', 'User-Agent': 'okhttp/3.11.0',
+            'Host': 'ose.caiyun.10086.cn', 'User-Agent': 'okhttp/3.11.0',
             'Content-Type': 'application/xml; charset=UTF-8', 'Accept': '*/*'
         }
         payload = '''                                <pcUploadFileRequest>                                    <ownerMSISDN>{phone}</ownerMSISDN>                                    <fileCount>1</fileCount>                                    <totalSize>1</totalSize>                                    <uploadContentList length="1">                                        <uploadContentInfo>                                            <comlexFlag>0</comlexFlag>                                            <contentDesc><![CDATA[]]></contentDesc>                                            <contentName><![CDATA[000000.txt]]></contentName>                                            <contentSize>1</contentSize>                                            <contentTAGList></contentTAGList>                                            <digest>C4CA4238A0B923820DCC509A6F75849B</digest>                                            <exif/>                                            <fileEtag>0</fileEtag>                                            <fileVersion>0</fileVersion>                                            <updateContentID></updateContentID>                                        </uploadContentInfo>                                    </uploadContentList>                                    <newCatalogName></newCatalogName>                                    <parentCatalogID></parentCatalogID>                                    <operation>0</operation>                                    <path></path>                                    <manualRename>2</manualRename>                                    <autoCreatePath length="0"/>                                    <tagID></tagID>                                    <tagType></tagType>                                </pcUploadFileRequest>                            '''.format(
@@ -999,7 +1025,7 @@ class MobileCloudDisk:
                 reward_data = response.json()
                 # print(json.dumps(reward_data, indent=4, ensure_ascii=False))
                 if reward_data.get("msg") == "success":
-                    reward_type_datas: dict[dict[list[dict]]] = reward_data.get("result", {})
+                    reward_type_datas = reward_data.get("result", {})
                     # print(json.dumps(reward_type_list, indent=4, ensure_ascii=False))
                     reward_type_list = list(reward_type_datas.keys())
                     # print(reward_type_list)
@@ -1092,4 +1118,7 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
-    send_notification_message_collection(f"中国移动云盘签到通知 - {datetime.now().strftime('%Y/%m/%d')}")
+    try:
+        send_notification_message_collection(f"中国移动云盘签到通知 - {datetime.now().strftime('%Y/%m/%d')}")
+    except Exception as e:
+        print(f"通知发送失败：{e}")
