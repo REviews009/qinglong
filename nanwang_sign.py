@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-南网在线自动签到脚本 v2.3（通知修复版）
+南网在线自动签到脚本 v2.4（UA环境变量版 + 通知修复版）
 青龙面板适用
 
 环境变量:
-    NANWANG_TOKEN - x-auth-token 值（必填）
-    NANWANG_COOKIE - Cookie字符串（备用，可选）
-    
+    NANWANG_TOKEN  - 南网在线 Token（必填，或配置 NANWANG_COOKIE）
+    NANWANG_COOKIE - 南网在线 Cookie（可选）
+    NANWANG_UA     - 自定义 User-Agent（可选，防风控轮换）
 """
 
 import os
@@ -19,8 +19,13 @@ import subprocess
 from datetime import datetime
 
 BASE_URL = "https://95598.csg.cn"
-UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/20A362 Ariver/1.0.15 NWZX/Portal Nebula WK WK RVKType(0) NebulaX/1.0.0"
+
+# 默认 UA（v2.4 新增：支持 NANWANG_UA 环境变量自定义）
+DEFAULT_UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/20A362 Ariver/1.0.15 NWZX/Portal Nebula WK WK RVKType(0) NebulaX/1.0.0"
+UA = os.environ.get("NANWANG_UA", "").strip() or DEFAULT_UA
+
 TASK_ID = "654165b1z56x1bq1"
+
 
 def send_notify(title, content):
     """调用青龙通知"""
@@ -90,6 +95,7 @@ def send_notify(title, content):
     print(f"内容: {content}")
     print(f"{'='*60}")
 
+
 class NanWangSign:
     def __init__(self, token, cookie=None):
         self.token = token
@@ -156,14 +162,22 @@ class NanWangSign:
         url = f"{BASE_URL}/mp/w2/szfw-points-txhsj/taskInfo/signOperate"
         return self._request("POST", url, {"taskId": TASK_ID, "thisGainPoints": 1})
 
+
 def main():
     print("=" * 60)
-    print("     南网在线自动签到脚本 v2.3")
+    print("     南网在线自动签到脚本 v2.4（UA环境变量版）")
     print("=" * 60)
 
     token = os.environ.get("NANWANG_TOKEN", "").strip()
     cookie = os.environ.get("NANWANG_COOKIE", "").strip()
     today = datetime.now().strftime("%Y-%m-%d")
+
+    # 打印当前使用的 UA（前80字符，方便调试）
+    print(f"[UA] 当前使用: {UA[:80]}...")
+    if os.environ.get("NANWANG_UA", "").strip():
+        print("[UA] 来源: 环境变量 NANWANG_UA")
+    else:
+        print("[UA] 来源: 默认内置UA（未设置 NANWANG_UA）")
 
     if not token and not cookie:
         msg = "缺少环境变量！请配置 NANWANG_TOKEN 或 NANWANG_COOKIE"
@@ -229,6 +243,7 @@ def main():
         print(msg)
         send_notify(f"南网在线签到失败 [{today}]", msg)
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()
